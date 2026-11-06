@@ -51,9 +51,8 @@ canvas{display:block;width:100%;height:100%;touch-action:none;-webkit-user-selec
 
 const CFG={
   speed:{base:220,max:560,min:70,accel:3.2},
-  pedal:{freq:1.05,gear:2.6},
+  wheel:{radius:72,speedup:1.0},
   parallax:{far:0.10,mid:0.35,near:0.85,road:1.0},
-  layerW:{far:1100,mid:760,near:460},
   color:{
     skyTop:"#a9cbe0",skyMid:"#cfe4e2",skyBot:"#eef3e2",
     sun:"rgba(255,250,228,0.85)",
@@ -77,13 +76,20 @@ function lerp(a,b,t){return a+(b-a)*t;}
 function clamp(v,a,b){return v<a?a:(v>b?b:v);}
 function rand01(s){const x=Math.sin(s*127.1+311.7)*43758.5453;return x-Math.floor(x);}
 function wrap(v,span){return ((v%span)+span)%span;}
+function hash01(slot,k){
+  let h=Math.imul((slot|0)^0x9e3779b9,0x85ebca6b)^Math.imul((k|0)+0x165667b1,0xc2b2ae35);
+  h=Math.imul(h^(h>>>15),0x2c1b3c6d);
+  h=Math.imul(h^(h>>>12),0x297a2d39);
+  h^=h>>>15;
+  return (h>>>0)/4294967296;
+}
 
 const cv=document.getElementById("cv");
 const ctx=cv.getContext("2d",{alpha:false});
 const view={W:0,H:0,DPR:1,groundY:0,scale:1,horizon:0};
 
-/* ===== 渐变缓存（resize 时重建）===== */
 const grads={sky:null,sun:null,ground:null,road:null,mist:null};
+
 function buildGradients(){
   const W=view.W,H=view.H,gy=view.groundY;
   const sky=ctx.createLinearGradient(0,0,0,gy);
@@ -126,7 +132,6 @@ function resizeView(){
 window.addEventListener("resize",resizeView);
 window.addEventListener("orientationchange",function(){setTimeout(resizeView,120);});
 
-/* ===== 萤火虫光晕预渲染 ===== */
 const glowCanvas=document.createElement("canvas");
 (function buildGlow(){
   const gs=64;
@@ -140,7 +145,6 @@ const glowCanvas=document.createElement("canvas");
   g2.fillRect(0,0,gs,gs);
 })();
 
-/* ===== 输入：键盘 / 触摸 / 按钮 三套独立状态 ===== */
 const keyInput={left:false,right:false,boost:false};
 const touchInput={left:false,right:false};
 const btnInput={on:false};
@@ -163,7 +167,6 @@ function toggleHud(){
   if(btnHud)btnHud.textContent=CFG.hud?"HUD 开":"HUD 关";
 }
 
-/* ===== 输入：触摸（左半减速 / 右半加速）===== */
 const pointers=new Map();
 function refreshZones(){
   touchInput.left=false;
@@ -174,7 +177,6 @@ function refreshZones(){
   });
 }
 
-/* 统一释放所有输入（失焦 / 切后台时调用，防止状态卡死） */
 function releaseAllKeys(){
   keyInput.left=false;keyInput.right=false;keyInput.boost=false;
   btnInput.on=false;
@@ -222,7 +224,6 @@ cv.addEventListener("pointerup",pointerEnd,{passive:true});
 cv.addEventListener("pointercancel",pointerEnd,{passive:true});
 cv.addEventListener("contextmenu",function(e){e.preventDefault();});
 
-/* ===== 顶部按钮 ===== */
 if(btnHud){
   btnHud.addEventListener("click",function(e){
     e.stopPropagation();
@@ -247,9 +248,8 @@ if(btnBoost){
   btnBoost.addEventListener("contextmenu",function(e){e.preventDefault();});
 }
 
-/* ===== 世界状态 ===== */
 const world={
-  speed:CFG.speed.base,dist:0,crank:0,wheel:0,
+  speed:CFG.speed.base,dist:0,crank:0,wheel:0,crankHz:0.9,
   bob:0,lean:0,t:0,blink:0,nextBlink:2.5
 };
 let fpsAvg=60,fpsAcc=0,fpsCount=0;
@@ -275,12 +275,12 @@ function drawSky(){
 
 function drawFarHills(){
   const W=view.W,gy=view.groundY,s=view.scale,base=view.horizon;
+  const shift=world.dist*CFG.parallax.far*0.55;
   ctx.save();ctx.globalAlpha=0.55;
   ctx.fillStyle=CFG.color.farHill;
-  const off=(world.dist*CFG.parallax.far*0.55)%(W+400);
   ctx.beginPath();ctx.moveTo(-100,gy);
   for(let x=-100;x<=W+100;x+=40){
-    const wx=x+off;
+    const wx=x+shift;
     const h=base+Math.sin(wx*0.0042)*28*s+Math.sin(wx*0.011+1.7)*14*s;
     ctx.lineTo(x,h);
   }
@@ -288,12 +288,10 @@ function drawFarHills(){
   ctx.restore();
 }
 
-/* 自包含 ctx 状态，避免污染调用方 */
 function drawBamboo(x,baseY,h,w,color,seed,sway,alpha){
   const segs=8;
-  const baseA=(alpha===undefined)?1:alpha;
   ctx.save();
-  ctx.globalAlpha=baseA;
+  ctx.globalAlpha=alpha;
   ctx.strokeStyle=color;ctx.lineWidth=w;ctx.lineCap="round";
   ctx.beginPath();ctx.moveTo(x,baseY);
   const pts=[];
@@ -305,7 +303,7 @@ function drawBamboo(x,baseY,h,w,color,seed,sway,alpha){
     ctx.lineTo(nx,ny);
   }
   ctx.stroke();
-  ctx.globalAlpha=baseA*0.45;
+  ctx.globalAlpha=alpha*0.45;
   ctx.lineWidth=Math.max(1,w*0.42);
   for(let i=0;i<pts.length;i++){
     ctx.beginPath();
@@ -313,7 +311,7 @@ function drawBamboo(x,baseY,h,w,color,seed,sway,alpha){
     ctx.lineTo(pts[i].x+w*0.5,pts[i].y);
     ctx.stroke();
   }
-  ctx.globalAlpha=baseA*0.70;
+  ctx.globalAlpha=alpha*0.70;
   ctx.fillStyle=color;
   const leafN=4+Math.floor(rand01(seed)*4);
   for(let i=0;i<leafN;i++){
@@ -330,26 +328,42 @@ function drawBamboo(x,baseY,h,w,color,seed,sway,alpha){
   ctx.restore();
 }
 
-function drawBambooLayer(par,span,count,hMin,hMax,wBase,color,alpha,seedBase,spread){
+function drawBambooLayer(par,slotW,perSlot,hMin,hMax,wBase,color,alpha,seedBase,baseOffset){
   const W=view.W,gy=view.groundY,s=view.scale;
-  const off=(world.dist*par)%span;
+  const baseY=gy+6+baseOffset;
+  const camX=world.dist*par;
+  const first=Math.floor(camX/slotW)-1;
+  const last=Math.floor((camX+W)/slotW)+1;
+  const cullL=-120*s,cullR=W+120*s;
   ctx.save();
-  for(let k=-1;k<=Math.ceil(W/span)+1;k++){
-    const bx=k*span-off;
-    for(let i=0;i<count;i++){
-      const seed=seedBase+k*17+i*7.3;
-      const x=bx+(i*span)/count+rand01(seed)*spread;
-      const h=(hMin+rand01(seed+1)*(hMax-hMin))*view.H;
-      const w=wBase*s*(0.82+rand01(seed+2)*0.42);
-      const sw=Math.sin(world.t*0.7+seed)*0.16;
-      drawBamboo(x,gy+6,h,w,color,seed,sw,alpha);
+  for(let slot=first;slot<=last;slot++){
+    const slotX=slot*slotW-camX;
+    for(let j=0;j<perSlot;j++){
+      const key=seedBase+j*131;
+      const x=slotX+hash01(slot,key)*slotW;
+      if(x<cullL||x>cullR)continue;
+      const h=(hMin+hash01(slot,key+1)*(hMax-hMin))*view.H+baseOffset;
+      const w=wBase*s*(0.82+hash01(slot,key+2)*0.42);
+      const randSeed=hash01(slot,key+3)*1000;
+      const swayPhase=hash01(slot,key+4)*TAU;
+      const sway=Math.sin(world.t*0.7+swayPhase)*0.16;
+      drawBamboo(x,baseY,h,w,color,randSeed,sway,alpha);
     }
   }
   ctx.restore();
 }
-function drawFarBamboo(){drawBambooLayer(CFG.parallax.far*0.9,CFG.layerW.far,5,0.20,0.34,5,CFG.color.farBamboo,0.42,3,34);}
-function drawMidBamboo(){drawBambooLayer(CFG.parallax.mid,CFG.layerW.mid,4,0.42,0.62,10,CFG.color.midBamboo,0.78,29,46);}
-function drawNearBamboo(){drawBambooLayer(CFG.parallax.near,CFG.layerW.near,3,0.62,0.95,17,CFG.color.nearBamboo,1,71,60);}
+
+function drawFarBamboo(){
+  drawBambooLayer(CFG.parallax.far*0.9,420,2,0.20,0.34,5,CFG.color.farBamboo,0.42,3,0);
+}
+function drawMidBamboo(){
+  const off=(view.H-view.groundY)*0.30;
+  drawBambooLayer(CFG.parallax.mid,340,2,0.42,0.62,10,CFG.color.midBamboo,0.78,29,off);
+}
+function drawNearBamboo(){
+  const off=(view.H-view.groundY)*1.15;
+  drawBambooLayer(CFG.parallax.near,300,2,0.62,0.95,17,CFG.color.nearBamboo,1,71,off);
+}
 
 function drawMist(){
   const W=view.W,gy=view.groundY,H=view.H;
@@ -398,7 +412,6 @@ function drawFallingLeaves(){
     const speedX=26+rand01(seed)*46;
     const speedY=18+rand01(seed+1)*30;
     const swayAmp=10+rand01(seed+2)*22;
-    /* 与竹林/路面同向：世界前进 → 向左漂移 */
     const drift=world.dist*0.55+world.t*speedX*0.6;
     const x=wrap(rand01(seed+3)*spanW-drift,spanW)-30;
     const y=((rand01(seed+4)*H*0.75+world.t*speedY)%(H*0.85));
@@ -414,12 +427,10 @@ function drawFallingLeaves(){
 
 function drawFireflies(){
   const W=view.W,gy=view.groundY,s=view.scale;
-  const spanW=W+20;
   ctx.save();
   for(let i=0;i<CFG.particles.fireflies;i++){
     const seed=i*31.1;
-    const rawX=rand01(seed)*W+Math.sin(world.t*0.45+seed)*34*(0.4+rand01(seed+1));
-    const x=wrap(rawX,spanW)-10;
+    const x=rand01(seed)*W+Math.sin(world.t*0.45+seed)*34*(0.4+rand01(seed+1));
     const y=gy*0.62+rand01(seed+2)*gy*0.30+Math.sin(world.t*0.6+seed*1.7)*18;
     const pulse=0.35+0.65*Math.abs(Math.sin(world.t*1.1+seed));
     const r=(1.6+rand01(seed+3)*1.4)*s;
@@ -451,29 +462,86 @@ function drawWheel(cx,cy,R,angle){
   ctx.restore();
 }
 
-function drawFrame(R,crankA){
-  const rearX=-R*1.26,rearY=R*0.98;
-  const frontX=R*1.28,frontY=R*0.98;
-  const bbX=-R*0.08,bbY=R*0.92;
-  const seatX=-R*0.30,seatY=-R*0.32;
-  const headX=R*0.78,headY=-R*0.36;
-  const barX=R*0.96,barY=-R*0.64;
-  const cogR=R*0.115,ringR=R*0.255;
+function computeFrameInfo(R){
+  return {
+    rearX:-R*1.26,rearY:R*0.98,
+    frontX:R*1.28,frontY:R*0.98,
+    bbX:-R*0.08,bbY:R*0.92,
+    seatX:-R*0.30,seatY:-R*0.32,
+    headX:R*0.78,headY:-R*0.36,
+    barX:R*0.96,barY:-R*0.64,
+    ringR:R*0.255,cogR:R*0.115
+  };
+}
+
+function computePedals(R,crankA,info){
+  const armL=R*0.30;
+  const x1=info.bbX+Math.cos(crankA)*armL,y1=info.bbY+Math.sin(crankA)*armL;
+  const x2=info.bbX+Math.cos(crankA+Math.PI)*armL,y2=info.bbY+Math.sin(crankA+Math.PI)*armL;
+  return {near:{x:x1,y:y1},far:{x:x2,y:y2}};
+}
+
+function drawCrankFar(R,info,ped){
+  const bbX=info.bbX,bbY=info.bbY;
+  const pw=R*0.245,ph=R*0.078;
+  const x=ped.far.x,y=ped.far.y;
+  ctx.strokeStyle="#565c63";ctx.lineWidth=R*0.052;ctx.lineCap="round";
+  ctx.beginPath();ctx.moveTo(bbX,bbY);ctx.lineTo(x,y);ctx.stroke();
+  ctx.fillStyle="#484e55";
+  ctx.beginPath();ctx.rect(x-pw/2,y-ph/2,pw,ph);ctx.fill();
+}
+
+function drawCrankNear(R,crankA,info,ped){
+  const bbX=info.bbX,bbY=info.bbY;
+  const pw=R*0.245,ph=R*0.078;
+  const x=ped.near.x,y=ped.near.y;
+  ctx.save();
+  ctx.translate(bbX,bbY);ctx.rotate(crankA);
+  ctx.strokeStyle="#7b828a";ctx.lineWidth=Math.max(1.5,R*0.038);
+  ctx.beginPath();ctx.arc(0,0,info.ringR,0,TAU);ctx.stroke();
+  ctx.fillStyle="#7b828a";
+  for(let i=0;i<18;i++){
+    const a=(i/18)*TAU;
+    ctx.beginPath();ctx.arc(Math.cos(a)*info.ringR,Math.sin(a)*info.ringR,R*0.020,0,TAU);ctx.fill();
+  }
+  ctx.strokeStyle="#6a7078";ctx.lineWidth=Math.max(1.2,R*0.024);
+  for(let i=0;i<5;i++){
+    const a=(i/5)*TAU;
+    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(Math.cos(a)*info.ringR*0.92,Math.sin(a)*info.ringR*0.92);ctx.stroke();
+  }
+  ctx.restore();
+  ctx.beginPath();ctx.arc(bbX,bbY,R*0.058,0,TAU);ctx.fillStyle="#383d43";ctx.fill();
+  ctx.strokeStyle="#787f87";ctx.lineWidth=R*0.056;
+  ctx.beginPath();ctx.moveTo(bbX,bbY);ctx.lineTo(x,y);ctx.stroke();
+  ctx.fillStyle="#5a6168";
+  ctx.beginPath();ctx.rect(x-pw/2,y-ph/2,pw,ph);ctx.fill();
+  ctx.fillStyle="rgba(255,255,255,0.18)";
+  ctx.beginPath();ctx.rect(x-pw/2,y-ph/2,pw,ph*0.4);ctx.fill();
+}
+
+function drawFrameGraphics(R,info,crankA){
+  const rearX=info.rearX,rearY=info.rearY;
+  const frontX=info.frontX,frontY=info.frontY;
+  const bbX=info.bbX,bbY=info.bbY;
+  const seatX=info.seatX,seatY=info.seatY;
+  const headX=info.headX,headY=info.headY;
+  const barX=info.barX,barY=info.barY;
+  const cogR=info.cogR;
   ctx.lineCap="round";ctx.lineJoin="round";
   ctx.save();
   ctx.strokeStyle="rgba(66,72,80,0.85)";
   ctx.lineWidth=Math.max(1.3,R*0.026);
-  ctx.beginPath();ctx.moveTo(rearX,rearY-cogR);ctx.lineTo(bbX,bbY-ringR);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(rearX,rearY+cogR);ctx.lineTo(bbX,bbY+ringR);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(rearX,rearY-cogR);ctx.lineTo(bbX,bbY-info.ringR);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(rearX,rearY+cogR);ctx.lineTo(bbX,bbY+info.ringR);ctx.stroke();
   const chainOff=(crankA/TAU)%1;
   ctx.fillStyle="rgba(140,148,156,0.75)";
   for(let i=0;i<16;i++){
     const t=((i/16)+chainOff)%1;
     ctx.beginPath();
-    ctx.arc(lerp(rearX,bbX,t),lerp(rearY-cogR,bbY-ringR,t),Math.max(0.8,R*0.012),0,TAU);ctx.fill();
+    ctx.arc(lerp(rearX,bbX,t),lerp(rearY-cogR,bbY-info.ringR,t),Math.max(0.8,R*0.012),0,TAU);ctx.fill();
     const t2=((i/16)+chainOff+0.5)%1;
     ctx.beginPath();
-    ctx.arc(lerp(rearX,bbX,t2),lerp(rearY+cogR,bbY+ringR,t2),Math.max(0.8,R*0.012),0,TAU);ctx.fill();
+    ctx.arc(lerp(rearX,bbX,t2),lerp(rearY+cogR,bbY+info.ringR,t2),Math.max(0.8,R*0.012),0,TAU);ctx.fill();
   }
   ctx.restore();
   ctx.save();
@@ -509,42 +577,6 @@ function drawFrame(R,crankA){
   ctx.beginPath();ctx.ellipse(seatX-R*0.03,seatY-R*0.02,R*0.25,R*0.072,-0.12,0,TAU);ctx.fill();
   ctx.fillStyle="rgba(255,255,255,0.10)";
   ctx.beginPath();ctx.ellipse(seatX-R*0.06,seatY-R*0.05,R*0.14,R*0.030,-0.12,0,TAU);ctx.fill();
-  return {rearX:rearX,rearY:rearY,frontX:frontX,frontY:frontY,bbX:bbX,bbY:bbY,
-    seatX:seatX,seatY:seatY,barX:barX,barY:barY,ringR:ringR,cogR:cogR};
-}
-
-function drawCrank(R,crankA,info){
-  const bbX=info.bbX,bbY=info.bbY;
-  const armL=R*0.30,pw=R*0.245,ph=R*0.078;
-  const x1=bbX+Math.cos(crankA)*armL,y1=bbY+Math.sin(crankA)*armL;
-  const x2=bbX+Math.cos(crankA+Math.PI)*armL,y2=bbY+Math.sin(crankA+Math.PI)*armL;
-  ctx.strokeStyle="#565c63";ctx.lineWidth=R*0.052;ctx.lineCap="round";
-  ctx.beginPath();ctx.moveTo(bbX,bbY);ctx.lineTo(x2,y2);ctx.stroke();
-  ctx.fillStyle="#484e55";
-  ctx.beginPath();ctx.rect(x2-pw/2,y2-ph/2,pw,ph);ctx.fill();
-  ctx.save();
-  ctx.translate(bbX,bbY);ctx.rotate(crankA);
-  ctx.strokeStyle="#7b828a";ctx.lineWidth=Math.max(1.5,R*0.038);
-  ctx.beginPath();ctx.arc(0,0,info.ringR,0,TAU);ctx.stroke();
-  ctx.fillStyle="#7b828a";
-  for(let i=0;i<18;i++){
-    const a=(i/18)*TAU;
-    ctx.beginPath();ctx.arc(Math.cos(a)*info.ringR,Math.sin(a)*info.ringR,R*0.020,0,TAU);ctx.fill();
-  }
-  ctx.strokeStyle="#6a7078";ctx.lineWidth=Math.max(1.2,R*0.024);
-  for(let i=0;i<5;i++){
-    const a=(i/5)*TAU;
-    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(Math.cos(a)*info.ringR*0.92,Math.sin(a)*info.ringR*0.92);ctx.stroke();
-  }
-  ctx.restore();
-  ctx.beginPath();ctx.arc(bbX,bbY,R*0.058,0,TAU);ctx.fillStyle="#383d43";ctx.fill();
-  ctx.strokeStyle="#787f87";ctx.lineWidth=R*0.056;
-  ctx.beginPath();ctx.moveTo(bbX,bbY);ctx.lineTo(x1,y1);ctx.stroke();
-  ctx.fillStyle="#5a6168";
-  ctx.beginPath();ctx.rect(x1-pw/2,y1-ph/2,pw,ph);ctx.fill();
-  ctx.fillStyle="rgba(255,255,255,0.18)";
-  ctx.beginPath();ctx.rect(x1-pw/2,y1-ph/2,pw,ph*0.4);ctx.fill();
-  return {near:{x:x1,y:y1},far:{x:x2,y:y2}};
 }
 
 function drawArm(x1,y1,x2,y2,bx,by,w,color){
@@ -560,7 +592,22 @@ function legPath(hx,hy,kx,ky,fx,fy,w,color){
   ctx.stroke();
 }
 
-function drawPanda(R,info,ped,crankA){
+function drawPandaFarLeg(R,info,ped,crankA){
+  const hipX=info.seatX+R*0.02;
+  const hipY=info.seatY-R*0.22+world.bob*R*0.10;
+  const lean=world.lean;
+  ctx.save();
+  ctx.translate(hipX,hipY);
+  ctx.rotate(lean*0.08+Math.sin(crankA)*0.010);
+  ctx.translate(-hipX,-hipY);
+  const kfx=(hipX+ped.far.x)/2+R*0.26,kfy=(hipY+ped.far.y)/2+R*0.10;
+  legPath(hipX+R*0.06,hipY,kfx,kfy,ped.far.x,ped.far.y,R*0.150,"#d9d9d3");
+  ctx.fillStyle="#cfcfc9";
+  ctx.beginPath();ctx.ellipse(ped.far.x,ped.far.y-R*0.03,R*0.105,R*0.070,0,0,TAU);ctx.fill();
+  ctx.restore();
+}
+
+function drawPandaBody(R,info,ped,crankA){
   const seatX=info.seatX,seatY=info.seatY,barX=info.barX,barY=info.barY;
   const hipX=seatX+R*0.02;
   const hipY=seatY-R*0.22+world.bob*R*0.10;
@@ -571,10 +618,6 @@ function drawPanda(R,info,ped,crankA){
   ctx.translate(-hipX,-hipY);
   const bRX=R*0.50,bRY=R*0.60;
   const bCX=hipX+R*0.02,bCY=hipY-R*0.50;
-  const kfx=(hipX+ped.far.x)/2+R*0.26,kfy=(hipY+ped.far.y)/2+R*0.10;
-  legPath(hipX+R*0.06,hipY,kfx,kfy,ped.far.x,ped.far.y,R*0.150,"#d9d9d3");
-  ctx.fillStyle="#cfcfc9";
-  ctx.beginPath();ctx.ellipse(ped.far.x,ped.far.y-R*0.03,R*0.105,R*0.070,0,0,TAU);ctx.fill();
   ctx.fillStyle=CFG.color.pandaBody;
   ctx.beginPath();ctx.ellipse(bCX,bCY,bRX,bRY,-0.06+lean*0.10,0,TAU);ctx.fill();
   ctx.save();
@@ -634,13 +677,14 @@ function drawPanda(R,info,ped,crankA){
 }
 
 function drawBikeAndPanda(){
-  const R=72*view.scale;
+  const R=CFG.wheel.radius*view.scale;
   const cx=view.W*0.46;
   const cy=view.groundY-R*0.01;
+  const speedT=clamp(world.speed/CFG.speed.max,0,1);
+  const info=computeFrameInfo(R);
+  const ped=computePedals(R,world.crank,info);
   ctx.save();
   ctx.translate(cx,cy);
-  const speedT=clamp(world.speed/CFG.speed.max,0,1);
-  /* 车底阴影：轮底在 y=R*1.98，投影放在地面附近 */
   ctx.save();
   ctx.globalAlpha=0.17;
   ctx.fillStyle="#2f352c";
@@ -648,7 +692,9 @@ function drawBikeAndPanda(){
   ctx.ellipse(0,R*1.94,R*1.62*(1+speedT*0.08),R*0.13,0,0,TAU);
   ctx.fill();
   ctx.restore();
-  const info=drawFrame(R,world.crank);
+  drawCrankFar(R,info,ped);
+  drawPandaFarLeg(R,info,ped,world.crank);
+  drawFrameGraphics(R,info,world.crank);
   drawWheel(info.frontX,info.frontY,R,world.wheel);
   drawWheel(info.rearX,info.rearY,R,world.wheel);
   ctx.save();
@@ -657,8 +703,8 @@ function drawBikeAndPanda(){
   ctx.beginPath();ctx.ellipse(info.frontX,info.frontY+R*0.94,R*0.72,R*0.075,0,0,TAU);ctx.fill();
   ctx.beginPath();ctx.ellipse(info.rearX,info.rearY+R*0.94,R*0.72,R*0.075,0,0,TAU);ctx.fill();
   ctx.restore();
-  const ped=drawCrank(R,world.crank,info);
-  drawPanda(R,info,ped,world.crank);
+  drawCrankNear(R,world.crank,info,ped);
+  drawPandaBody(R,info,ped,world.crank);
   ctx.restore();
 }
 
@@ -666,7 +712,7 @@ function drawHUD(){
   if(!CFG.hud)return;
   const s=view.scale;
   const kmh=(world.speed*0.036).toFixed(1);
-  const cad=(CFG.pedal.freq*clamp(world.speed/CFG.speed.base,0.45,2.2)*60).toFixed(0);
+  const cad=(world.crankHz*60).toFixed(0);
   const fps=fpsAvg.toFixed(0);
   const pad=12*s,boxW=150*s,boxH=66*s;
   const x=Math.max(pad,view.W-pad-boxW),y=52+pad;
@@ -695,12 +741,12 @@ function update(dt){
   if(boost)target=CFG.speed.max;
   world.speed=lerp(world.speed,target,Math.min(1,dt*CFG.speed.accel));
   const sp=clamp(world.speed,CFG.speed.min,CFG.speed.max);
-  /* dist 不做取模：各图层使用前单独取模，避免重置点造成视差跳变 */
   world.dist+=sp*dt;
-  const rate=clamp(sp/CFG.speed.base,0.45,2.2);
-  const dCrank=CFG.pedal.freq*rate*TAU*dt;
-  world.crank+=dCrank;
-  world.wheel+=dCrank*CFG.pedal.gear;
+  const R=CFG.wheel.radius*view.scale;
+  world.wheel+=(sp*dt)/R*CFG.wheel.speedup;
+  const speedNorm=clamp(sp/CFG.speed.base,0.45,2.2);
+  world.crankHz=0.9+0.32*(speedNorm-1);
+  world.crank+=world.crankHz*TAU*dt;
   if(world.crank>TAU*1000)world.crank-=TAU*1000;
   if(world.wheel>TAU*1000)world.wheel-=TAU*1000;
   world.bob=Math.sin(world.crank*2)*0.5;
@@ -718,7 +764,6 @@ function update(dt){
 }
 
 function render(){
-  /* 每帧重置基础状态，防止异常帧污染 transform / alpha */
   ctx.setTransform(view.DPR,0,0,view.DPR,0,0);
   ctx.globalAlpha=1;
   drawSky();
